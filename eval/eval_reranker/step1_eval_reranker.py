@@ -194,7 +194,7 @@ def main():
                 qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
                 
                 search_result_save_dir = os.path.join(eval_args.search_result_save_dir, sub_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}")
-                search_result_path = os.path.join(search_result_save_dir, f"{lang}.txt")
+                search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
                 if not os.path.exists(search_result_path):
                     merge_search_result(search_result_save_dir, lang)
                     assert os.path.exists(search_result_path)
@@ -217,7 +217,7 @@ def main():
             qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
             
             search_result_save_dir = os.path.join(eval_args.search_result_save_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}")
-            search_result_path = os.path.join(search_result_save_dir, f"{lang}.txt")
+            search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
             if not os.path.exists(search_result_path):
                 merge_search_result(search_result_save_dir, lang)
                 assert os.path.exists(search_result_path)

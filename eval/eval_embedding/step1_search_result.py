@@ -13,11 +13,13 @@ python step1-search_results.py \
 import os
 import torch
 import datasets
+import json
 from pprint import pprint
 from dataclasses import dataclass, field
 from transformers import HfArgumentParser, is_torch_npu_available
 from pyserini.search.faiss import FaissSearcher, AutoQueryEncoder
 from pyserini.output_writer import get_output_writer, OutputFormat
+from copy import deepcopy
 
 
 @dataclass
@@ -131,6 +133,9 @@ def main():
     
     languages = check_languages(eval_args.languages)
     
+    with open('chunk2doc.json','r') as jf:
+        chunk2doc=json.load(jf)
+    
     if model_args.encoder[-1] == '/':
         model_args.encoder = model_args.encoder[:-1]
     
@@ -150,6 +155,8 @@ def main():
         print(f"Start searching results of {lang} ...")
         
         result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder), f"{lang}.txt")
+        copy_result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder),f"{lang}_real_doc.txt")
+        
         if not os.path.exists(os.path.dirname(result_save_path)):
             os.makedirs(os.path.dirname(result_save_path))
         
@@ -178,6 +185,7 @@ def main():
             k=eval_args.hits,
             threads=eval_args.threads
         )
+        
         search_results = [(_id, search_results[_id]) for _id in qids]
         
         save_result(
@@ -186,6 +194,27 @@ def main():
             qids=qids, 
             max_hits=eval_args.hits
         )
+        
+        
+        copy_search_results=deepcopy(search_results)
+        #转化为原始 doc id 并进行去重
+        for q_id, ids in copy_search_results.items():
+            seen=set()
+            unique_ids=[]
+            for result in ids:
+                result.docid=chunk2doc[result.docid]
+                if result.docid not in seen:
+                    unique_ids.append(result)
+                    seen.add(result.docid)
+            copy_search_results[q_id]=unique_ids
+
+        save_result(
+            search_results=copy_search_results,
+            result_save_path=copy_result_save_path, 
+            qids=qids, 
+            max_hits=eval_args.hits
+        )
+        
 
     print("==================================================")
     print("Finish generating search results with model:")

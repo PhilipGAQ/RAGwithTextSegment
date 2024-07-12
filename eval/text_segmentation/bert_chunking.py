@@ -13,7 +13,7 @@ import heapq
 from copy import deepcopy
 
 class BertChunk():
-    def __init__(self,doc=None,threshold=None,chunk_size=50,chunk_by_sentence=True,chunk_length=500,slide_window=500,max_length=500):
+    def __init__(self,doc=None,threshold=None,chunk_size=50,chunk_by_sentence=True,chunk_length=512,slide_window=512,max_length=512):
         if torch.cuda.is_available():
             self.device = torch.device("cuda:0")
         else:

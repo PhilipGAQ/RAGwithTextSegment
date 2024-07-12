@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from transformers import HfArgumentParser
 from eval.text_segmentation.bert_chunking import *
 from eval.text_segmentation.bge_chunking import *
+import json
+import pickle
 
 @dataclass
 class ModelArgs:
@@ -69,7 +71,8 @@ class EvalArgs:
         metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
     )
 
-
+    
+    
 def get_model(model_args: ModelArgs):
     model = FlagModel(
         model_args.encoder, 
@@ -89,27 +92,49 @@ def check_languages(languages):
             raise ValueError(f"Language `{lang}` is not supported. Avaliable languages: {avaliable_languages}")
     return languages
 
-def chunk(corpus_list,method:str):
+def chunk(lang: str,corpus_list,method:str,max_length:int):
     # no segment, chunk, bert, bge
     if method=='no segment':
         # do nothing
         return corpus_list
     elif method=='chunk':
         #TODO implement easy chunk
-        return 
+        return corpus_list
     elif method=='bert':
         
-        chunked_corpus=[]
+        chunked_corpus_list=[]
         doc2chunk={}
-        chunk_model=BertChunk()
-        
+        chunk_model=BertChunk(chunk_length=max_length,slide_window=max_length,max_length=max_length)
+        chunk2doc={}
         ptr=0
-        for corpus in corpus_list:
-            segmented_corpus=chunk_model.chunk(doc=corpus['text'],segment_type='slide_window')
-            doc2chunk[corpus['id']]=
+        for corpus in tqdm(corpus_list, desc="Text Segment"):
+            if len(corpus)<max_length:
+                doc2chunk[corpus['id']]=ptr
+                
+                chunk2doc[f"doc-{lang}-{ptr}"]=corpus['id']
+                
+                ptr+=1
+                chunked_corpus_list.append(corpus)
+            else:
+                segmented_corpus=chunk_model.chunk(doc=corpus['text'],segment_type='slide_window')
+                doc2chunk[corpus['id']]=range(ptr,ptr+len(segmented_corpus))
+                for i in range(ptr,ptr+len(segmented_corpus)):
+                    chunk2doc[f"doc-{lang}-{ptr}"]=corpus['id']
+                ptr+=len(segmented_corpus)
+                chunked_corpus_list.extend(segmented_corpus)
+        
+        new_list=[{'id': f"doc-{lang}-{i}", 'content': corpus} for i, corpus in enumerate(chunked_corpus_list)]
+        
+        with open('chunked_corpus_list.pkl','wb') as f:
+            pickle.dump(new_list, f)
+        
+        with open('doc2chunk.json','w') as jf:
+            json.dump(doc2chunk,jf)
+        with open('chunk2doc.json','w') as jf:
+            json.dump(chunk2doc,jf)
+        return new_list
     
-    
-def load_corpus(lang: str):    
+def load_corpus(lang: str,segment_method='no segment',max_length=512):    
     corpus = datasets.load_dataset('Shitao/MLDR', f'corpus-{lang}', split='corpus')
     # TODO     
     """
@@ -127,7 +152,8 @@ def load_corpus(lang: str):
     """
     
     corpus_list = [{'id': e['docid'], 'content': e['text']} for e in tqdm(corpus, desc="Generating corpus")]
-    corpus = datasets.Dataset.from_list(corpus_list)
+    chunked_corpus_list=chunk(lang,corpus_list,method=segment_method,max_length=max_length)
+    corpus = datasets.Dataset.from_list(chunked_corpus_list)
     return corpus
 
 
@@ -182,7 +208,7 @@ def main():
             continue
         
         print(f"Start generating embedding of {lang} ...")
-        corpus = load_corpus(lang)
+        corpus = load_corpus(lang,eval_args.segment_method,eval_args.max_passage_length)
         
         index, docid = generate_index(
             model=model, 

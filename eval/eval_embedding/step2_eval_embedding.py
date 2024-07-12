@@ -185,7 +185,7 @@ def main():
         qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
         
         search_result_save_dir = os.path.join(eval_args.search_result_save_dir, os.path.basename(encoder))
-        search_result_path = os.path.join(search_result_save_dir, f"{lang}.txt")
+        search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
         
         result = evaluate(script_path, qrels_path, search_result_path, eval_args.metrics)
         results[lang] = result
