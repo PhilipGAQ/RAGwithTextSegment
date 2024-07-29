@@ -9,6 +9,7 @@ python step0-generate_embedding.py \
 --pooling_method cls \
 --normalize_embeddings True
 """
+import time
 import os
 import faiss
 import datasets
@@ -17,11 +18,21 @@ from tqdm import tqdm
 from FlagEmbedding import FlagModel
 from dataclasses import dataclass, field
 from transformers import HfArgumentParser
+# import sys
+# sys.path.append("/data/home/angqing/code/eval/")
 from eval.text_segmentation.bert_chunking import *
 from eval.text_segmentation.bge_chunking import *
+from eval.text_segmentation.slide_windows import *
+from eval.text_segmentation.easy_chunk import *
 import json
 import pickle
-
+from concurrent.futures import ThreadPoolExecutor
+import torch
+from torch.nn import DataParallel
+from torch.multiprocessing import Pool, set_start_method
+import json
+from functools import reduce
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 @dataclass
 class ModelArgs:
     encoder: str = field(
@@ -67,8 +78,8 @@ class EvalArgs:
     )
     
     segment_method: str = field(
-        default='no segment',
-        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
+        default='no_segment',
+        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge_[small/base]'}
     )
 
     
@@ -92,23 +103,83 @@ def check_languages(languages):
             raise ValueError(f"Language `{lang}` is not supported. Avaliable languages: {avaliable_languages}")
     return languages
 
-def chunk(lang: str,corpus_list,method:str,max_length:int):
+
+
+def chunk(lang: str,corpus_list,method:str,max_length:int,overlap=0):
     # no segment, chunk, bert, bge
-    if method=='no segment':
+    if method=='no_segment':
         # do nothing
         return corpus_list
+    elif method=='easy_chunk':
+        chunked_corpus_list = []
+        chunk2doc = {}
+        ptr = 0
+
+        for corpus in tqdm(corpus_list, desc="Easy Chunk Text Segment"):
+            if len(corpus['content']) < max_length:
+                chunk2doc[f"doc-{lang}-{ptr}"] = corpus['id']
+                chunked_corpus_list.append(corpus)
+                ptr += 1
+            else:
+                segmented_corpus = slide_window_split(corpus['content'], max_length, overlap)
+                for i, segment in enumerate(segmented_corpus):
+                    chunk_id = f"doc-{lang}-{ptr + i}"
+                    chunk2doc[chunk_id] = corpus['id']
+                    chunked_corpus_list.append({'id': chunk_id, 'content': segment})
+                ptr += len(segmented_corpus)
+
+
+        # 保存切分后的文档和chunk到doc的映射
+        with open(f'chunked_corpus_list_easy_chunk.pkl', 'wb') as f:
+            pickle.dump(chunked_corpus_list, f)
+        with open(f'chunk2doc_easy_chunk.json', 'w') as jf:
+            json.dump(chunk2doc, jf)
+        
+        return chunked_corpus_list
     elif method=='chunk':
-        #TODO implement easy chunk
-        return corpus_list
-    elif method=='bert':
+        #TODO implement chunk
+        # 使用sentence切分，再加滑动窗口
+        chunked_corpus_list=[]
+        
+        chunk2doc={}
+        ptr=0
+        for corpus in tqdm(corpus_list,desc="easy Text Segment:"):
+            if len(corpus['content'])<max_length:
+                
+                chunk2doc[f"doc-{lang}-{ptr}"]=corpus['id']
+                
+                ptr+=1
+                chunked_corpus_list.append(corpus)
+            else:
+                # segmented_corpus=chunk_model.chunk(doc=corpus['content'],segment_type='slide_window')
+                segmented_corpus=slide_windows(corpus['content'], max_length)
+                for i in range(ptr,ptr+len(segmented_corpus)):
+                    chunk2doc[f"doc-{lang}-{i}"]=corpus['id']
+                ptr+=len(segmented_corpus)
+                chunked_corpus_list.extend(segmented_corpus)
+        new_list=[{'id': f"doc-{lang}-{i}", 'content': corpus} for i, corpus in enumerate(chunked_corpus_list)]
+        
+        with open(f'chunked_corpus_list_{method}.pkl','wb') as f:
+            pickle.dump(new_list, f)
+        with open(f'chunk2doc_{method}.json','w') as jf:
+            json.dump(chunk2doc,jf)
+        return new_list
+    
+    else:
+        if method=='bert':
+            chunk_model=BertChunk(chunk_length=max_length,slide_window=max_length,max_length=max_length)
+        elif method=='bge_small':
+            chunk_model=BgeChunk(model_name_or_path='BAAI/bge-small-zh-v1.5')
+        elif method=='bge_base':
+            chunk_model=BgeChunk(model_name_or_path='BAAI/bge-base-zh-v1.5')
         
         chunked_corpus_list=[]
         doc2chunk={}
-        chunk_model=BertChunk(chunk_length=max_length,slide_window=max_length,max_length=max_length)
+        
         chunk2doc={}
         ptr=0
         for corpus in tqdm(corpus_list, desc="Text Segment"):
-            if len(corpus)<max_length:
+            if len(corpus['content'])<max_length:
                 doc2chunk[corpus['id']]=ptr
                 
                 chunk2doc[f"doc-{lang}-{ptr}"]=corpus['id']
@@ -116,21 +187,21 @@ def chunk(lang: str,corpus_list,method:str,max_length:int):
                 ptr+=1
                 chunked_corpus_list.append(corpus)
             else:
-                segmented_corpus=chunk_model.chunk(doc=corpus['text'],segment_type='slide_window')
+                segmented_corpus=chunk_model.chunk(doc=corpus['content'],segment_type='slide_window')
                 doc2chunk[corpus['id']]=range(ptr,ptr+len(segmented_corpus))
                 for i in range(ptr,ptr+len(segmented_corpus)):
-                    chunk2doc[f"doc-{lang}-{ptr}"]=corpus['id']
+                    chunk2doc[f"doc-{lang}-{i}"]=corpus['id']
                 ptr+=len(segmented_corpus)
                 chunked_corpus_list.extend(segmented_corpus)
         
         new_list=[{'id': f"doc-{lang}-{i}", 'content': corpus} for i, corpus in enumerate(chunked_corpus_list)]
         
-        with open('chunked_corpus_list.pkl','wb') as f:
+        with open(f'chunked_corpus_list_{method}.pkl','wb') as f:
             pickle.dump(new_list, f)
         
-        with open('doc2chunk.json','w') as jf:
+        with open(f'doc2chunk_{method}.json','w') as jf:
             json.dump(doc2chunk,jf)
-        with open('chunk2doc.json','w') as jf:
+        with open(f'chunk2doc_{method}.json','w') as jf:
             json.dump(chunk2doc,jf)
         return new_list
     
@@ -200,7 +271,7 @@ def main():
     print('Generate embedding of following languages: ', languages)
     for lang in languages:
         print("**************************************************")
-        index_save_dir = os.path.join(eval_args.index_save_dir, os.path.basename(encoder), lang)
+        index_save_dir = os.path.join(eval_args.index_save_dir, os.path.basename(encoder),eval_args.segment_method, lang)
         if not os.path.exists(index_save_dir):
             os.makedirs(index_save_dir)
         if os.path.exists(os.path.join(index_save_dir, 'index')) and not eval_args.overwrite:
@@ -208,7 +279,7 @@ def main():
             continue
         
         print(f"Start generating embedding of {lang} ...")
-        corpus = load_corpus(lang,eval_args.segment_method,eval_args.max_passage_length)
+        corpus = load_corpus(lang ,eval_args.segment_method,eval_args.max_passage_length)
         
         index, docid = generate_index(
             model=model, 
@@ -216,6 +287,7 @@ def main():
             max_passage_length=eval_args.max_passage_length,
             batch_size=eval_args.batch_size
         )
+        
         save_result(index, docid, index_save_dir)
 
     print("==================================================")
@@ -224,4 +296,9 @@ def main():
 
 
 if __name__ == "__main__":
+    set_start_method('spawn')
+    start_time=time.time()
     main()
+    end_time=time.time()
+    elapse=end_time-start_time
+    print(f"step 0 costs: {elapse} s ")

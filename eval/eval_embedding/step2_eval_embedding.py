@@ -44,7 +44,8 @@ from pprint import pprint
 from dataclasses import dataclass, field
 from transformers import HfArgumentParser
 from pyserini.util import download_evaluation_script
-
+import time
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 @dataclass
 class EvalArgs:
@@ -82,7 +83,10 @@ class EvalArgs:
         default='./eval_results',
         metadata={'help': 'Dir to saving evaluation results. Evaluation results will be saved to `eval_result_save_dir/{encoder}.json`'}
     )
-
+    segment_method: str = field(
+        default='no segment',
+        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
+    )
 
 def check_languages(languages):
     if isinstance(languages, str):
@@ -185,7 +189,9 @@ def main():
         qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
         
         search_result_save_dir = os.path.join(eval_args.search_result_save_dir, os.path.basename(encoder))
-        search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
+        search_result_path = os.path.join(search_result_save_dir, eval_args.segment_method ,f"{lang}_real_doc.txt")
+        if(not os.path.isfile(search_result_path)):
+            search_result_path = os.path.join(search_result_save_dir, eval_args.segment_method ,f"{lang}.txt")
         
         result = evaluate(script_path, qrels_path, search_result_path, eval_args.metrics)
         results[lang] = result
@@ -195,7 +201,7 @@ def main():
         pooling_method=eval_args.pooling_method,
         normalize_embeddings=eval_args.normalize_embeddings,
         results=results,
-        save_path=os.path.join(eval_args.eval_result_save_dir, f"{os.path.basename(encoder)}.json"),
+        save_path=os.path.join(eval_args.eval_result_save_dir, eval_args.segment_method , f"{os.path.basename(encoder)}.json"),
         eval_languages=languages
     )
     print("==================================================")
@@ -204,4 +210,8 @@ def main():
 
 
 if __name__ == "__main__":
+    starttime=time.time()
     main()
+    endtime=time.time()
+    elapsed=endtime-starttime
+    print(f"step2 costs {elapsed} s")

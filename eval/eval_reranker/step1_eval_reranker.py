@@ -69,7 +69,10 @@ class EvalArgs:
         default='./reranker_evaluation_results',
         metadata={'help': 'Dir to saving evaluation results. Evaluation results will be saved to `eval_result_save_dir/{encoder}-{reranker}.json`'}
     )
-
+    segment_method: str = field(
+        default='no_segment',
+        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
+    )
 
 def check_languages(languages):
     if isinstance(languages, str):
@@ -187,50 +190,25 @@ def main():
     if 'checkpoint-' in os.path.basename(eval_args.reranker):
         eval_args.reranker = os.path.dirname(eval_args.reranker) + '_' + os.path.basename(eval_args.reranker)
     
-    try:
-        for sub_dir in ['colbert', 'sparse', 'dense', 'colbert+sparse+dense']:
-            results = {}
-            for lang in languages:
-                qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
-                
-                search_result_save_dir = os.path.join(eval_args.search_result_save_dir, sub_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}")
-                search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
-                if not os.path.exists(search_result_path):
-                    merge_search_result(search_result_save_dir, lang)
-                    assert os.path.exists(search_result_path)
-                
-                result = evaluate(script_path, qrels_path, search_result_path, eval_args.metrics)
-                results[lang] = result
-            
-            print("****************************")
-            print(sub_dir + ":")
-            save_results(
-                model_name=eval_args.encoder,
-                reranker_name=eval_args.reranker,
-                results=results,
-                save_path=os.path.join(eval_args.eval_result_save_dir, sub_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}.json"),
-                eval_languages=languages,
-            )
-    except:
-        results = {}
-        for lang in languages:
-            qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
-            
-            search_result_save_dir = os.path.join(eval_args.search_result_save_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}")
-            search_result_path = os.path.join(search_result_save_dir, f"{lang}_real_doc.txt")
-            if not os.path.exists(search_result_path):
-                merge_search_result(search_result_save_dir, lang)
-                assert os.path.exists(search_result_path)
-            
-            result = evaluate(script_path, qrels_path, search_result_path, eval_args.metrics)
-            results[lang] = result
-        save_results(
-            model_name=eval_args.encoder,
-            reranker_name=eval_args.reranker,
-            results=results,
-            save_path=os.path.join(eval_args.eval_result_save_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}.json"),
-            eval_languages=languages,
-        )
+
+    results = {}
+    for lang in languages:
+        qrels_path = os.path.join(eval_args.qrels_dir, f"qrels.mldr-v1.0-{lang}-test.tsv")
+        search_result_save_dir = os.path.join(eval_args.search_result_save_dir, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}")
+        search_result_path = os.path.join(search_result_save_dir,eval_args.segment_method, f"{lang}_real_doc.txt")
+        if not os.path.exists(search_result_path):
+            merge_search_result(search_result_save_dir, lang)
+            assert os.path.exists(search_result_path)
+        
+        result = evaluate(script_path, qrels_path, search_result_path, eval_args.metrics)
+        results[lang] = result
+    save_results(
+        model_name=eval_args.encoder,
+        reranker_name=eval_args.reranker,
+        results=results,
+        save_path=os.path.join(eval_args.eval_result_save_dir,eval_args.segment_method, f"{os.path.basename(eval_args.encoder)}-{os.path.basename(eval_args.reranker)}.json"),
+        eval_languages=languages,
+    )
     
     print("==================================================")
     print("Finish generating evaluation results with following model and reranker:")

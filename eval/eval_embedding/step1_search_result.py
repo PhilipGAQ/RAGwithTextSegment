@@ -20,8 +20,10 @@ from transformers import HfArgumentParser, is_torch_npu_available
 from pyserini.search.faiss import FaissSearcher, AutoQueryEncoder
 from pyserini.output_writer import get_output_writer, OutputFormat
 from copy import deepcopy
+import time
 
-
+from tqdm import tqdm
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 @dataclass
 class ModelArgs:
     encoder: str = field(
@@ -72,6 +74,10 @@ class EvalArgs:
     overwrite: bool = field(
         default=False,
         metadata={'help': 'Whether to overwrite embedding'}
+    )
+    segment_method: str = field(
+        default='no segment',
+        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
     )
 
 
@@ -132,9 +138,7 @@ def main():
     eval_args: EvalArgs
     
     languages = check_languages(eval_args.languages)
-    
-    with open('chunk2doc.json','r') as jf:
-        chunk2doc=json.load(jf)
+
     
     if model_args.encoder[-1] == '/':
         model_args.encoder = model_args.encoder[:-1]
@@ -154,8 +158,8 @@ def main():
         print("**************************************************")
         print(f"Start searching results of {lang} ...")
         
-        result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder), f"{lang}.txt")
-        copy_result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder),f"{lang}_real_doc.txt")
+        result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder), eval_args.segment_method ,f"{lang}.txt")
+        copy_result_save_path = os.path.join(eval_args.result_save_dir, os.path.basename(encoder),eval_args.segment_method,f"{lang}_real_doc.txt")
         
         if not os.path.exists(os.path.dirname(result_save_path)):
             os.makedirs(os.path.dirname(result_save_path))
@@ -164,7 +168,7 @@ def main():
             print(f'Search results of {lang} already exists. Skip...')
             continue
         
-        index_save_dir = os.path.join(eval_args.index_save_dir, os.path.basename(encoder), lang)
+        index_save_dir = os.path.join(eval_args.index_save_dir, os.path.basename(encoder),eval_args.segment_method, lang)
         if not os.path.exists(index_save_dir):
             raise FileNotFoundError(f"{index_save_dir} not found")
         searcher = FaissSearcher(
@@ -179,14 +183,14 @@ def main():
             query_instruction_for_retrieval=model_args.query_instruction_for_retrieval
         )
         
-        search_results = searcher.batch_search(
+        search_results_old = searcher.batch_search(
             queries=queries,
             q_ids=qids,
             k=eval_args.hits,
             threads=eval_args.threads
         )
         
-        search_results = [(_id, search_results[_id]) for _id in qids]
+        search_results = [(_id, search_results_old[_id]) for _id in qids]
         
         save_result(
             search_results=search_results,
@@ -196,24 +200,40 @@ def main():
         )
         
         
-        copy_search_results=deepcopy(search_results)
-        #转化为原始 doc id 并进行去重
-        for q_id, ids in copy_search_results.items():
-            seen=set()
-            unique_ids=[]
-            for result in ids:
-                result.docid=chunk2doc[result.docid]
-                if result.docid not in seen:
-                    unique_ids.append(result)
-                    seen.add(result.docid)
-            copy_search_results[q_id]=unique_ids
+        chunk2doc_path = f'chunk2doc_{eval_args.segment_method}.json'
+        print(chunk2doc_path)
+        
+        chunk2doc = {}
 
-        save_result(
-            search_results=copy_search_results,
-            result_save_path=copy_result_save_path, 
-            qids=qids, 
-            max_hits=eval_args.hits
-        )
+        try:
+            with open(chunk2doc_path, 'r') as jf:
+                chunk2doc = json.load(jf)
+        except FileNotFoundError:
+            print(f"Warning: File {chunk2doc_path} does not exist. Skipping document ID transformation.")
+            # 或者可以选择在这里抛出异常或执行其他操作，取决于你的需求
+        
+        if chunk2doc:             
+            copy_search_results=deepcopy(search_results_old)
+                
+            #转化为原始 doc id 并进行去重
+            for q_id, ids in tqdm(copy_search_results.items(),desc="Coverting to origin docids"):
+                seen=set()
+                unique_ids=[]
+                for result in ids:
+                    result.docid=chunk2doc[result.docid]
+                    if result.docid not in seen:
+                        unique_ids.append(result)
+                        seen.add(result.docid)
+                copy_search_results[q_id]=unique_ids
+            
+            copy_search_results = [(_id, copy_search_results[_id]) for _id in qids]
+
+            save_result(
+                search_results=copy_search_results,
+                result_save_path=copy_result_save_path, 
+                qids=qids, 
+                max_hits=eval_args.hits
+            )
         
 
     print("==================================================")
@@ -222,4 +242,8 @@ def main():
 
 
 if __name__ == "__main__":
+    starttime=time.time()
     main()
+    endtime=time.time()
+    elapse=endtime-starttime
+    print(f'step 1 costs: {elapse} s ')

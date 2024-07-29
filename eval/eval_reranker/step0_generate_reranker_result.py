@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from transformers import HfArgumentParser
 import pickle
 import json
+import time
 
 @dataclass
 class ModelArgs:
@@ -92,6 +93,10 @@ class EvalArgs:
         default=0,
         metadata={'help': 'CUDA ID to use. -1 means only use CPU.'}
     )
+    segment_method: str = field(
+        default='no_segment',
+        metadata={'help': 'Text segmentation method, including no segment, chunk, bert, bge'}
+    )
 
 
 def check_languages(languages):
@@ -150,21 +155,30 @@ def get_queries_dict(lang: str, split: str='test'):
     return queries_dict
 
 
-def get_corpus_dict(lang: str):
-    # corpus = datasets.load_dataset('Shitao/MLDR', f'corpus-{lang}', split='corpus')
-    with open('chunked_corpus_list.pkl','rb') as f:
-        chunked_corpus_list=pickle.load(f)
+def get_corpus_dict(lang: str, method):
+    if method=='bert' or method=='bge_small' or method=='bge_base' or method=='chunk' or method=='easy_chunk':      
+        with open(f'/data/home/angqing/code/eval/eval_embedding/chunked_corpus_list_{method}.pkl','rb') as f:
+            chunked_corpus_list=pickle.load(f)
+            
+        corpus_dict = {}
+        for data in tqdm(chunked_corpus_list,desc="Generating corpus"):
+            docid=data['id']
+            content=data['content']
+            corpus_dict[docid]=content
+            
+        return corpus_dict
+    else:
+        corpus = datasets.load_dataset('Shitao/MLDR', f'corpus-{lang}', split='corpus')
         
-    corpus_dict = {}
-    for data in tqdm(chunked_corpus_list,desc="Generating corpus"):
-        docid=data['id']
-        content=data['content']
-        corpus_dict[docid]=content
+        corpus_dict = {}
+        for data in tqdm(corpus, desc="Generating corpus"):
+            docid = data['docid']
+            content = data['text']
+            corpus_dict[docid] = content
+        return corpus_dict
         
-    return corpus_dict
 
-
-def save_rerank_results(queries_dict: dict, corpus_dict: dict, reranker: FlagReranker, search_result_dict: dict, rerank_result_save_path ,new_rerank_result_save_path , batch_size: int=256, max_query_length: int=512, max_passage_length: int=512, dense_weight: float=0.15, sparse_weight: float=0.5, colbert_weight: float=0.35):
+def save_rerank_results(queries_dict: dict, corpus_dict: dict,method, reranker: FlagReranker, search_result_dict: dict, rerank_result_save_path ,new_rerank_result_save_path , batch_size: int=256, max_query_length: int=512, max_passage_length: int=512):
     qid_list = []
     sentence_pairs = []
     for qid, docids in search_result_dict.items():
@@ -197,40 +211,41 @@ def save_rerank_results(queries_dict: dict, corpus_dict: dict, reranker: FlagRer
                 docid, score = docid_score
                 line = f"{qid} Q0 {docid} {rank+1} {score:.6f} Faiss"
                 f.write(line + '\n')
-                    
-    with open('chunk2doc.json' ,'r') as jf:
-        chunk2doc=json.load(jf)
-                    
-    # save results of original doc ids:
-    if not os.path.exists(os.path.dirname(new_rerank_result_save_path)):
-        os.makedirs(os.path.dirname(new_rerank_result_save_path))
-    
-    with open(new_rerank_result_save_path, 'w', encoding='utf-8') as f:
-        i = 0
-        # for each qid
-        for qid in qid_list:
-            docids = search_result_dict[qid]
-            docids_scores = []
-            for j in range(len(docids)):
-                docids_scores.append((docids[j], scores[i + j]))
-            i += len(docids)
-            
-            seen=set()
-            docids_scores.sort(key=lambda x: x[1], reverse=True)
-            
-            #还原为doc id ,去重
-            #TODO :有个问题, 这里去重之后数量变少了,是否影响后续的eval?
-            new_docids_scores=[]
-            for docid_score in docids_scores:
-                docid, score= docid_score
-                if chunk2doc(docid) not in seen:
-                    seen.add(chunk2doc(docid))
-                    new_docids_scores.append((chunk2doc(docid),score))
                 
-            for rank, docid_score in enumerate(new_docids_scores):
-                docid, score = docid_score
-                line = f"{qid} Q0 {docid} {rank+1} {score:.6f} Faiss"
-                f.write(line + '\n')
+    if method=='bert' or method=='bge_small' or method=='bge_base' or method=='chunk' or method=='easy_chunk':                    
+        with open(f'/data/home/angqing/code/eval/eval_embedding/chunk2doc_{method}.json' ,'r') as jf:
+            chunk2doc=json.load(jf)
+                        
+        # save results of original doc ids:
+        if not os.path.exists(os.path.dirname(new_rerank_result_save_path)):
+            os.makedirs(os.path.dirname(new_rerank_result_save_path))
+        
+        with open(new_rerank_result_save_path, 'w', encoding='utf-8') as f:
+            i = 0
+            # for each qid
+            for qid in qid_list:
+                docids = search_result_dict[qid]
+                docids_scores = []
+                for j in range(len(docids)):
+                    docids_scores.append((docids[j], scores[i + j]))
+                i += len(docids)
+                
+                seen=set()
+                docids_scores.sort(key=lambda x: x[1], reverse=True)
+                
+                #还原为doc id ,去重
+                #TODO :有个问题, 这里去重之后数量变少了,是否影响后续的eval?
+                new_docids_scores=[]
+                for docid_score in docids_scores:
+                    docid, score= docid_score
+                    if chunk2doc[docid] not in seen:
+                        seen.add(chunk2doc[docid])
+                        new_docids_scores.append((chunk2doc[docid],score))
+                    
+                for rank, docid_score in enumerate(new_docids_scores):
+                    docid, score = docid_score
+                    line = f"{qid} Q0 {docid} {rank+1} {score:.6f} Faiss"
+                    f.write(line + '\n')
 
 
 def get_shard(search_result_dict: dict, num_shards: int, shard_id: int):
@@ -271,19 +286,20 @@ def rerank_results(languages: list, eval_args: EvalArgs, model_args: ModelArgs, 
         queries_dict = get_queries_dict(lang, split='test')
         
         search_result_save_dir = os.path.join(eval_args.search_result_save_dir, os.path.basename(eval_args.encoder))
-        search_result_path = os.path.join(search_result_save_dir, f"{lang}.txt")
+        search_result_path = os.path.join(search_result_save_dir,eval_args.segment_method , f"{lang}.txt")
         
         search_result_dict = get_search_result_dict(search_result_path, top_k=eval_args.top_k)
         
         search_result_dict = get_shard(search_result_dict, num_shards=num_shards, shard_id=shard_id)
         
-        corpus_dict = get_corpus_dict(lang)
+        corpus_dict = get_corpus_dict(lang, eval_args.segment_method)
         
         
 
         rerank_result_save_path = os.path.join(
             eval_args.rerank_result_save_dir, 
             f"{os.path.basename(eval_args.encoder)}-{os.path.basename(model_args.reranker)}", 
+            eval_args.segment_method,
             f"{lang}_{shard_id}-of-{num_shards}.txt" if num_shards > 1 else f"{lang}.txt"
         )
 
@@ -292,6 +308,7 @@ def rerank_results(languages: list, eval_args: EvalArgs, model_args: ModelArgs, 
         new_rerank_result_save_path = os.path.join(
             eval_args.rerank_result_save_dir, 
             f"{os.path.basename(eval_args.encoder)}-{os.path.basename(model_args.reranker)}", 
+            eval_args.segment_method,
             f"{lang}_{shard_id}-of-{num_shards}_real_doc.txt" if num_shards > 1 else f"{lang}_real_doc.txt"
         )
         
@@ -306,9 +323,7 @@ def rerank_results(languages: list, eval_args: EvalArgs, model_args: ModelArgs, 
             batch_size=eval_args.batch_size,
             max_query_length=eval_args.max_query_length,
             max_passage_length=eval_args.max_passage_length,
-            dense_weight=eval_args.dense_weight,
-            sparse_weight=eval_args.sparse_weight,
-            colbert_weight=eval_args.colbert_weight
+            method=eval_args.segment_method
         )
 
 
@@ -334,4 +349,8 @@ def main():
 
 
 if __name__ == "__main__":
+    starttime=time.time()
     main()
+    endtime=time.time()
+    elapsed=endtime-starttime
+    print(f'time: {elapsed}')

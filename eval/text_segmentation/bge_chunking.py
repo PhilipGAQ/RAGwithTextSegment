@@ -1,7 +1,3 @@
-"""
-Easy BGE chunking,
-Use bge output as sentence embedding, and calculate cossim in a slide-window 
-"""
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from FlagEmbedding import FlagModel
@@ -12,95 +8,100 @@ from tqdm import tqdm
 from copy import deepcopy
 
 class BgeChunk():
-    def __init__(self,doc,threshold=None,chunk_size=50,model_name_or_path='BAAI/bge-large-zh-v1.5',use_fp16=True,chunk_by_sentence=True,slide_window=500,max_length=500,chunk_length=500,):
-        self.model_name=model_name_or_path
+    def __init__(self, doc=None, threshold=None, chunk_size=50, model_name_or_path='BAAI/bge-small-zh-v1.5', use_fp16=True, chunk_by_sentence=True, slide_window=512, max_length=512, chunk_length=512,device=None):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_name = model_name_or_path
         self.model = FlagModel(self.model_name, 
                     query_instruction_for_retrieval="为这个句子生成表示以用于检索相关文章：",
-                    use_fp16=use_fp16) 
+                    use_fp16=use_fp16)
+        if device:
+            self.model.model.to(device)
         if threshold:
-            self.threshold=threshold
+            self.threshold = threshold
         else: 
-            self.threshold=None
-        self.doc=doc
-        self.chunk_size=chunk_size
-        self.chunk_by_sentence=chunk_by_sentence
-        self.chunked_doc=None
-        self.embeddings=None
-        self.similarity=None
-        self.chunk_length=chunk_length
-        self.slide_window=slide_window
-        self.max_length=max_length
+            self.threshold = None
+        
+        self.doc = doc
+        self.chunk_size = chunk_size
+        self.chunk_by_sentence = chunk_by_sentence
+        self.chunked_doc = None
+        self.embeddings = None
+        self.similarity = None
+        self.chunk_length = chunk_length
+        self.slide_window = slide_window
+        self.max_length = max_length
 
     def chunking_text_by_length(self):
-        chunked_doc=[]
-        for i in range(0,len(self.doc),self.chunk_size):
-            chunked_doc.append(self.doc[i:i+self.chunk_size])
-        self.chunked_doc=chunked_doc
+        chunked_doc = []
+        for i in range(0, len(self.doc), self.chunk_size):
+            chunked_doc.append(self.doc[i:i + self.chunk_size])
+        self.chunked_doc = chunked_doc
         
     def chunking_text_by_sentence(self):
-        pattern = r'([^。！？]+[。！？])'
+        pattern = r'([^。！？,.?!]+[。！？,.?!])'
         chunked_doc = re.findall(pattern, self.doc)
-        self.chunked_doc=chunked_doc
-
+        self.chunked_doc = chunked_doc
 
     def get_embeddings(self):
-        embeddings=[]
-        for chunk in self.chunked_doc:
-            embedding=self.model.encode(chunk)
-            embeddings.append(embedding)
-        self.embeddings=embeddings
+        embeddings = []
+        batch_size = 32  # Define your batch size here
+        for i in range(0, len(self.chunked_doc), batch_size):
+            batch = self.chunked_doc[i:i + batch_size]
+            inputs = [self.model.encode(chunk) for chunk in batch]
+            embeddings.extend(inputs)
+        self.embeddings = embeddings
 
     def cossim(self):
-        similarity=[]
-        for i in range(len(self.embeddings)-1):
-            similarity.append(cosine_similarity(self.embeddings[i].reshape(1,-1),self.embeddings[i+1].reshape(1,-1))[0][0])
-        self.similarity=similarity
+        similarity = []
+        for i in range(len(self.embeddings) - 1):
+            similarity.append(cosine_similarity(self.embeddings[i].reshape(1, -1), self.embeddings[i + 1].reshape(1, -1))[0][0])
+        self.similarity = similarity
         if not self.threshold:
-            self.threshold=sum(self.similarity)/len(self.similarity)
+            self.threshold = sum(self.similarity) / len(self.similarity)
 
     def getsim(self):
-        similarity=[]
-        for i in range(len(self.embeddings)-1):
-            similarity.append(self.embeddings[i] @ self.embeddings[i+1].T)
-        self.similarity=similarity
+        similarity = []
+        for i in range(len(self.embeddings) - 1):
+            similarity.append(self.embeddings[i] @ self.embeddings[i + 1].T)
+        self.similarity = similarity
         if not self.threshold:
-            self.threshold=sum(self.similarity)/len(self.similarity)
+            self.threshold = sum(self.similarity) / len(self.similarity)
     
-    def text_segment(self,threshold=None):
+    def text_segment(self, threshold=None):
         if not threshold:
-            threshold=self.threshold
-        split_points=[i for i, sim in enumerate(self.similarity) if sim<threshold]
-        segmented_doc=[]
-        chunked_doc_copy=self.chunked_doc.copy()
-        ptr=0
+            threshold = self.threshold
+        split_points = [i for i, sim in enumerate(self.similarity) if sim < threshold]
+        segmented_doc = []
+        chunked_doc_copy = self.chunked_doc.copy()
+        ptr = 0
         for point in split_points:
             segmented_doc.append(''.join(chunked_doc_copy[ptr:point]))
-            ptr=point
+            ptr = point
         segmented_doc.append(''.join(chunked_doc_copy[ptr:]))
-        self.segmented_doc=segmented_doc
+        self.segmented_doc = segmented_doc
         return segmented_doc
     
-    def text_segment_k_mins(self,k=None):
+    def text_segment_k_mins(self, k=None):
         if not k:
-            self.k=len(self.doc)//self.chunk_length+1
+            self.k = len(self.doc) // self.chunk_length + 1
         else: 
-            self.k=k
-        threshold=self.find_k_smallest_threshold()
-        self.split_points=[i for i, sim in enumerate(self.similarity) if sim<threshold]
-        segmented_doc=[]
+            self.k = k
+        threshold = self.find_k_smallest_threshold()
+        self.split_points = [i for i, sim in enumerate(self.similarity) if sim < threshold]
+        segmented_doc = []
         chunked_doc_copy = self.chunked_doc.copy()
-        ptr=0
+        ptr = 0
         for point in self.split_points:
             segmented_doc.append(''.join(chunked_doc_copy[ptr:point]))
-            ptr=point
+            ptr = point
         segmented_doc.append(''.join(chunked_doc_copy[ptr:]))
-        self.segmented_doc=segmented_doc
+        self.segmented_doc = segmented_doc
         return segmented_doc
         
     def find_k_smallest_threshold(self):
-        sim_copy=deepcopy(self.similarity)
+        sim_copy = deepcopy(self.similarity)
         sim_copy.sort()
-        return sim_copy[self.k-1]
+        return sim_copy[self.k - 1]
         
     def text_segment_slide_window(self, slide_window=None, threshold=None):
         if not slide_window:
@@ -141,12 +142,11 @@ class BgeChunk():
         TODO
         """
         if not threshold:
-            threshold=self.threshold
-        
+            threshold = self.threshold
         pass
         
     def _encode(self, sentence):
-        embedding=self.model.encode(sentence)
+        embedding = self.model.encode(sentence)
         return embedding
 
     def _cal_cossim(self, embedding1, embedding2):
@@ -183,8 +183,7 @@ class BgeChunk():
 
         return segmented_doc_copy
     
-    
-    def get_segment_doc(self,segment_type=None,threshold=None,k=None,slide_window=None,clustering=True):
+    def get_segment_doc(self, segment_type=None, threshold=None, k=None, slide_window=None, clustering=True):
         """
         segment_type: None, slide_window, k
         """
@@ -196,18 +195,32 @@ class BgeChunk():
             self.getsim()
         if not segment_type:
             self.text_segment(threshold=threshold)
-        elif segment_type=='slide_window':
-            self.text_segment_slide_window(slide_window=slide_window,threshold=threshold)
-        elif segment_type=='k':
+        elif segment_type == 'slide_window':
+            self.text_segment_slide_window(slide_window=slide_window, threshold=threshold)
+        elif segment_type == 'k':
             self.text_segment_k_mins(k=k)
         
         if clustering:
-            self.segmented_doc=self.clustering()
+            self.segmented_doc = self.clustering()
             
         return self.segmented_doc
-        
-        
-
-def main():
-    pass
     
+    def chunk(self, doc, segment_type=None, threshold=None, k=None, slide_window=None, clustering=True):
+        """
+        segment_type: None, slide_window, k
+        """
+        self.doc = doc
+        self.chunking_text_by_sentence()
+        self.get_embeddings()
+        self.getsim()
+        if not segment_type:
+            self.text_segment(threshold=threshold)
+        elif segment_type == 'slide_window':
+            self.text_segment_slide_window(slide_window=slide_window, threshold=threshold)
+        elif segment_type == 'k':
+            self.text_segment_k_mins(k=k)
+        
+        if clustering:
+            self.segmented_doc = self.clustering()
+        
+        return self.segmented_doc
