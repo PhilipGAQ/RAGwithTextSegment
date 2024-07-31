@@ -32,7 +32,9 @@ from torch.nn import DataParallel
 from torch.multiprocessing import Pool, set_start_method
 import json
 from functools import reduce
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+chunk_method=["no_segment","chunk","bert","easy_chunk"]
+
 @dataclass
 class ModelArgs:
     encoder: str = field(
@@ -121,7 +123,7 @@ def chunk(lang: str,corpus_list,method:str,max_length:int,overlap=0):
                 chunked_corpus_list.append(corpus)
                 ptr += 1
             else:
-                segmented_corpus = slide_window_split(corpus['content'], max_length, overlap)
+                segmented_corpus = chunk_with_title(corpus['content'], max_length, 0,False,False)
                 for i, segment in enumerate(segmented_corpus):
                     chunk_id = f"doc-{lang}-{ptr + i}"
                     chunk2doc[chunk_id] = corpus['id']

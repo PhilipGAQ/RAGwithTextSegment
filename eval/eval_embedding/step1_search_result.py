@@ -23,7 +23,7 @@ from copy import deepcopy
 import time
 
 from tqdm import tqdm
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+chunk_method=["no_segment","chunk","bert","easy_chunk"]
 @dataclass
 class ModelArgs:
     encoder: str = field(

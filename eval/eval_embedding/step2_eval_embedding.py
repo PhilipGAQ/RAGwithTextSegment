@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from transformers import HfArgumentParser
 from pyserini.util import download_evaluation_script
 import time
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+chunk_method=["no_segment","chunk","bert","easy_chunk"]
 
 @dataclass
 class EvalArgs:
